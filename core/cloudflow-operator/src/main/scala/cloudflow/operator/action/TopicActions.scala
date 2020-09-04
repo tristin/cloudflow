@@ -77,9 +77,12 @@ object TopicActions {
             case Some(secret) =>
               val config = toConfig(event.ConfigInputChangeEvent.getData(secret), secret)
               if (config.hasPath(RunnerConfig.PortMappingsPath)) {
-                // TODO this is not exactly right yet. (Creating the TopicInfo from id and conf, where conf might be empty)
-                val topicFromConfig = TopicInfo(Topic(id = topic.id, config = getKafkaConfig(config, topic)))
-                createAction(namespace, labels, topicFromConfig)
+                // if the kafkaconfig is not empty, it contains all the configuration
+                val topicInfo = getKafkaConfig(config, topic)
+                  .map(conf => TopicInfo(Topic(id = topic.id, config = conf)))
+                  .getOrElse(topic)
+
+                createAction(namespace, labels, topicInfo)
               } else {
                 createAction(namespace, labels, topic)
               }
@@ -164,7 +167,7 @@ object TopicActions {
     override def updateMetadata(obj: ConfigMap, newMetadata: ObjectMeta) = obj.copy(metadata = newMetadata)
   }
 
-  private def getKafkaConfig(config: Config, topic: TopicInfo): Config = {
+  private def getKafkaConfig(config: Config, topic: TopicInfo): Option[Config] = {
     val portMappingsConfig = config.getConfig(RunnerConfig.PortMappingsPath)
     // get the port mapping that matches the topic id.
     portMappingsConfig
@@ -176,10 +179,9 @@ object TopicActions {
         val topicIdInConfig = portMappingsConfig.getString(s"${key}.id")
         topicIdInConfig == topic.id
       }
-      .map { key =>
-        getConfigOrEmpty(portMappingsConfig, s"$key.config")
+      .flatMap { key =>
+        getConfig(portMappingsConfig, s"$key.config")
       }
-      .getOrElse(ConfigFactory.empty())
   }
 
   private def toConfig(str: String, secret: Secret): Config =
@@ -194,8 +196,8 @@ object TopicActions {
       }
       .getOrElse(ConfigFactory.empty)
 
-  private def getConfigOrEmpty(config: Config, key: String): Config =
-    if (config.hasPath(key)) config.getConfig(key) else ConfigFactory.empty()
+  private def getConfig(config: Config, key: String): Option[Config] =
+    if (config.hasPath(key)) Some(config.getConfig(key)) else None
 
   object TopicInfo {
     def apply(t: Topic): TopicInfo = TopicInfo(
