@@ -77,6 +77,7 @@ object TopicActions {
             case Some(secret) =>
               val config = toConfig(event.ConfigInputChangeEvent.getData(secret), secret)
               if (config.hasPath(RunnerConfig.PortMappingsPath)) {
+                // TODO this is not exactly right yet. (Creating the TopicInfo from id and conf, where conf might be empty)
                 val topicFromConfig = TopicInfo(Topic(id = topic.id, config = getKafkaConfig(config, topic)))
                 createAction(namespace, labels, topicFromConfig)
               } else {
