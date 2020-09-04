@@ -18,11 +18,11 @@ package cloudflow.operator
 package action
 
 import java.util.Collections
-
+import scala.util.Try
 import akka.actor.ActorSystem
 import cloudflow.blueprint.Blueprint
 import cloudflow.blueprint.deployment._
-import com.typesafe.config.Config
+import com.typesafe.config.{ Config, ConfigFactory }
 import org.apache.kafka.clients.admin.{ Admin, AdminClientConfig, CreateTopicsOptions, NewTopic }
 import org.apache.kafka.common.KafkaFuture
 import org.slf4j.LoggerFactory
@@ -51,14 +51,58 @@ object TopicActions {
 
     val labels = CloudflowLabels(newApp)
     val actions =
-      managedTopics.toVector.map(topic => createAction(newApp.namespace, labels)(topic))
+      managedTopics.toVector.map { topic =>
+        // find a config (secret) for the topic, all deployments should have the same configuraton for the same topic,
+        // since topics are defined once, deployments refer to the topics by port mappings.
+        // So it is ok to just take the first one found, that uses the topic.
+        val secretName = newApp.spec.deployments
+          .filter(deployment => deployment.portMappings.values.exists(_.id == topic.id))
+          .headOption
+          .map(_.secretName)
+        action(secretName, newApp.namespace, labels, topic)
+      }
     actions
   }
 
   type TopicResource = ConfigMap
 
-  def createAction(appNamespace: String,
-                   labels: CloudflowLabels)(topic: TopicInfo)(implicit ctx: DeploymentContext): CreateOrUpdateAction[ConfigMap] = {
+  def action(secretName: Option[String], namespace: String, labels: CloudflowLabels, topic: TopicInfo)(
+      implicit ctx: DeploymentContext
+  ): Action[ConfigMap] =
+    secretName
+      .map { name =>
+        Action.provided[Secret, ConfigMap](
+          name,
+          namespace, {
+            case Some(secret) =>
+              val config             = toConfig(event.ConfigInputChangeEvent.getData(secret), secret)
+              val portMappingsConfig = config.getConfig(RunnerConfig.PortMappingsPath)
+              // get the port mapping with the right topic id.
+              val conf = portMappingsConfig
+                .root()
+                .entrySet
+                .asScala
+                .map(_.getKey)
+                .find { key =>
+                  val topicIdInConfig = portMappingsConfig.getString(s"${key}.id")
+                  topicIdInConfig == topic.id
+                }
+                .map { key =>
+                  getConfigOrEmpty(portMappingsConfig, s"$key.config")
+                }
+                .getOrElse(ConfigFactory.empty())
+
+              val topicFromConfig = TopicInfo(Topic(id = topic.id, config = conf))
+              createAction(namespace, labels, topicFromConfig)
+            case None => createAction(namespace, labels, topic)
+          }
+        )
+      }
+      .getOrElse(createAction(namespace, labels, topic))
+
+  def createAction(appNamespace: String, labels: CloudflowLabels, topic: TopicInfo)(
+      implicit ctx: DeploymentContext
+  ): CreateOrUpdateAction[ConfigMap] = {
     val (bootstrapServers, brokerConfig) = topic.bootstrapServers match {
       case Some(bootstrapServers) => bootstrapServers -> topic.brokerConfig
       case None => {
@@ -130,6 +174,21 @@ object TopicActions {
   private val editor = new ObjectEditor[ConfigMap] {
     override def updateMetadata(obj: ConfigMap, newMetadata: ObjectMeta) = obj.copy(metadata = newMetadata)
   }
+
+  private def toConfig(str: String, secret: Secret): Config =
+    Try(ConfigFactory.parseString(str))
+      .recover {
+        case e =>
+          log.error(
+            s"Detected config in secret '${secret.metadata.name}' that contains invalid configuration data, IGNORING configuration.",
+            e
+          )
+          ConfigFactory.empty
+      }
+      .getOrElse(ConfigFactory.empty)
+
+  private def getConfigOrEmpty(config: Config, key: String): Config =
+    if (config.hasPath(key)) config.getConfig(key) else ConfigFactory.empty()
 
   object TopicInfo {
     def apply(t: Topic): TopicInfo = TopicInfo(
