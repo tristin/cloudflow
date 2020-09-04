@@ -77,23 +77,7 @@ object TopicActions {
             case Some(secret) =>
               val config = toConfig(event.ConfigInputChangeEvent.getData(secret), secret)
               if (config.hasPath(RunnerConfig.PortMappingsPath)) {
-                val portMappingsConfig = config.getConfig(RunnerConfig.PortMappingsPath)
-                // get the port mapping with the right topic id.
-                val conf = portMappingsConfig
-                  .root()
-                  .entrySet
-                  .asScala
-                  .map(_.getKey)
-                  .find { key =>
-                    val topicIdInConfig = portMappingsConfig.getString(s"${key}.id")
-                    topicIdInConfig == topic.id
-                  }
-                  .map { key =>
-                    getConfigOrEmpty(portMappingsConfig, s"$key.config")
-                  }
-                  .getOrElse(ConfigFactory.empty())
-
-                val topicFromConfig = TopicInfo(Topic(id = topic.id, config = conf))
+                val topicFromConfig = TopicInfo(Topic(id = topic.id, config = getKafkaConfig(config, topic)))
                 createAction(namespace, labels, topicFromConfig)
               } else {
                 createAction(namespace, labels, topic)
@@ -177,6 +161,24 @@ object TopicActions {
 
   private val editor = new ObjectEditor[ConfigMap] {
     override def updateMetadata(obj: ConfigMap, newMetadata: ObjectMeta) = obj.copy(metadata = newMetadata)
+  }
+
+  private def getKafkaConfig(config: Config, topic: TopicInfo): Config = {
+    val portMappingsConfig = config.getConfig(RunnerConfig.PortMappingsPath)
+    // get the port mapping that matches the topic id.
+    portMappingsConfig
+      .root()
+      .entrySet
+      .asScala
+      .map(_.getKey)
+      .find { key =>
+        val topicIdInConfig = portMappingsConfig.getString(s"${key}.id")
+        topicIdInConfig == topic.id
+      }
+      .map { key =>
+        getConfigOrEmpty(portMappingsConfig, s"$key.config")
+      }
+      .getOrElse(ConfigFactory.empty())
   }
 
   private def toConfig(str: String, secret: Secret): Config =
