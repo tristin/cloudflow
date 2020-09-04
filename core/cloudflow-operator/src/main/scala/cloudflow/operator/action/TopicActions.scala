@@ -52,7 +52,7 @@ object TopicActions {
     val labels = CloudflowLabels(newApp)
     val actions =
       managedTopics.toVector.map { topic =>
-        // find a config (secret) for the topic, all deployments should have the same configuraton for the same topic,
+        // find a config (secret) for the topic, all deployments should have the same configuration for the same topic,
         // since topics are defined once, deployments refer to the topics by port mappings.
         // So it is ok to just take the first one found, that uses the topic.
         val secretName = newApp.spec.deployments
